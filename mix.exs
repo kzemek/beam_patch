@@ -4,25 +4,61 @@ defmodule BeamPatch.MixProject do
   def project do
     [
       app: :beam_patch,
-      version: "0.1.0",
-      elixir: "~> 1.18",
+      version: "0.0.0",
+      description: "Patch Elixir & Erlang modules at runtime",
+      package: package(),
+      source_url: "https://github.com/kzemek/beam_patch",
+      homepage_url: "https://github.com/kzemek/beam_patch",
+      docs: docs(),
+      elixir: "~> 1.16",
       start_permanent: Mix.env() == :prod,
-      deps: deps()
-    ]
+      deps: deps(),
+      aliases: aliases(),
+      dialyzer: dialyzer(),
+      elixirc_paths: elixirc_paths(Mix.env())
+    ] ++ docs()
   end
 
-  # Run "mix help compile.app" to learn about applications.
   def application do
-    [
-      extra_applications: [:logger]
-    ]
+    []
   end
 
-  # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      # {:dep_from_hexpm, "~> 0.3.0"},
-      # {:dep_from_git, git: "https://github.com/elixir-lang/my_dep.git", tag: "0.1.0"}
+      {:ex_doc, "~> 0.38.1", only: :dev, runtime: false, optional: true},
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false, optional: true},
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false, optional: true}
     ]
   end
+
+  defp docs do
+    [
+      main: "BeamPatch",
+      extras: ["LICENSE", "NOTICE"],
+      groups_for_modules: [
+        Error: [BeamPatch.Error]
+      ]
+    ]
+  end
+
+  defp package do
+    [
+      links: %{"GitHub" => "https://github.com/kzemek/beam_patch"},
+      licenses: ["Apache-2.0"]
+    ]
+  end
+
+  defp dialyzer do
+    []
+  end
+
+  defp aliases do
+    [
+      credo: "credo --strict",
+      lint: ["credo", "dialyzer"]
+    ]
+  end
+
+  defp elixirc_paths(:test), do: ["lib", "test/fixtures"]
+  defp elixirc_paths(_), do: ["lib"]
 end

@@ -1,87 +1,181 @@
 defmodule BeamPatch do
-  @moduledoc false
+  @external_resource "README.md"
+  @moduledoc File.read!("README.md")
+             |> String.replace(~r/^.*?(?=Patch Elixir & Erlang modules at runtime)/s, "")
+             |> String.replace("> [!WARNING]", "> #### Warning {: .warning}")
+             |> String.replace("> [!IMPORTANT]", "> #### Important {: .info}")
 
-  defstruct [:module, :filename, :forms, :compile_opts, :bytecode]
+  require Record
+  require BeamPatch.Error
+
+  defmodule Patch do
+    defstruct [:module, :filename, :bytecode]
+    @type t :: %__MODULE__{module: module(), filename: charlist(), bytecode: binary()}
+  end
 
   # These options don't work with our usage of `:compile.forms/2`
   @filter_out_compile_opts [:from_core, :no_core_prepare]
 
-  def new(module) do
-    {^module, bytecode, _filename} = :code.get_object_code(module)
+  Record.defrecordp(:function, [:ann, :name, :arity, :clauses])
 
-    forms = abstract_code(bytecode)
-
-    %__MODULE__{
-      module: module,
-      filename: file_attribute(forms) || ~c"",
-      forms: forms,
-      compile_opts: compile_opts(bytecode)
-    }
+  defmacro patch!(module, do: body) do
+    quote do
+      unquote(__MODULE__).patch_quoted!(unquote(module), unquote(Macro.escape(body)))
+    end
   end
 
-  def remap_functions(%__MODULE__{} = patch, mappings) do
-    forms =
-      for form <- patch.forms do
-        with {:function, _, name, arity, _} <- form,
-             {:ok, new_name} <- Map.fetch(mappings, {name, arity}),
-             do: rename_function(form, new_name),
-             else: (_ -> form)
-      end
-
-    %{patch | forms: forms}
+  defmacro patch_and_load!(module, do: body) do
+    quote do
+      unquote(__MODULE__).patch_quoted_and_load!(unquote(module), unquote(Macro.escape(body)))
+    end
   end
 
-  def compile(%__MODULE__{} = patch) do
-    compile_opts =
-      [:return_errors, :return_warnings | patch.compile_opts] -- @filter_out_compile_opts
-
-    {:ok, _module, bytecode, _warnings} = :compile.forms(patch.forms, compile_opts)
-
-    %{patch | bytecode: bytecode}
+  @spec patch_quoted_and_load(module(), body :: Macro.t()) ::
+          {:ok, Patch.t()} | {:error, BeamPatch.Error.t()}
+  def patch_quoted_and_load(module, body) do
+    patch_quoted_and_load!(module, body)
+  rescue
+    e in BeamPatch.Error.t() -> {:error, e}
   end
 
-  def load(%__MODULE__{} = patch) do
-    {:module, _} = :code.load_binary(patch.module, patch.filename, patch.bytecode)
+  @spec load(Patch.t()) :: :ok | {:error, BeamPatch.Error.t()}
+  def load(%Patch{} = patch) do
+    load!(patch)
+  rescue
+    e in BeamPatch.Error.t() -> {:error, e}
   end
 
-  def inject_functions(%__MODULE__{} = patch, body) do
-    existing_functions = collect_functions(patch.forms)
+  @spec patch_quoted_and_load!(module(), body :: Macro.t()) :: :ok
+  def patch_quoted_and_load!(module, body) do
+    module |> patch_quoted!(body) |> load!()
+  end
 
-    functions_quoted =
+  @spec load!(Patch.t()) :: :ok
+  def load!(%Patch{} = patch) do
+    case :code.load_binary(patch.module, patch.filename, patch.bytecode) do
+      {:module, _} -> :ok
+      {:error, reason} -> raise BeamPatch.ModuleLoadError, module: patch.module, reason: reason
+    end
+  end
+
+  @spec patch_quoted(module(), body :: Macro.t()) ::
+          {:ok, Patch.t()} | {:error, BeamPatch.Error.t()}
+  def patch_quoted(module, body) do
+    {:ok, patch_quoted!(module, body)}
+  rescue
+    e in BeamPatch.Error.t() -> {:error, e}
+  end
+
+  @spec patch_quoted!(module(), body :: Macro.t()) :: Patch.t()
+  def patch_quoted!(module, body) do
+    bytecode = get_object_code!(module)
+
+    forms = abstract_code!(module, bytecode)
+    filename = file_attribute(forms) || ~c""
+    compile_opts = compile_opts!(module, bytecode)
+
+    {expanded_functions, name_mappings} = expand_functions(body)
+    forms = map_overriden_functions(forms, name_mappings)
+
+    existing_functions =
+      for function(name: name, arity: arity) <- forms,
+          into: MapSet.new(),
+          do: {name, arity}
+
+    existing_functions_quoted =
       for {name, arity} <- existing_functions,
           name != :__info__ do
-        args = for i <- 1..arity, do: {:"arg#{i}", [generated: true], nil}
+        args =
+          for {name, meta, ctx} <- Macro.generate_arguments(arity, nil),
+              do: {name, [generated: true] ++ meta, ctx}
 
         quote do
-          defp unquote(name)(unquote_splicing(args)), do: :ok
+          def unquote(name)(unquote_splicing(args)), do: :ok
         end
       end
 
     bytecode =
-      compile_quoted(
+      compile_quoted!(
         quote do
           defmodule Es6Maps.InjectedCode do
-            unquote(body)
-            unquote_splicing(functions_quoted)
+            @moduledoc false
+            @compile {:autoload, false}
+            unquote(expanded_functions)
+            unquote_splicing(existing_functions_quoted)
           end
         end,
-        to_string(patch.filename)
+        to_string(filename)
       )
 
     new_forms =
-      for {:function, _, name, arity, _} = fun <- abstract_code(bytecode),
+      for function(name: name, arity: arity) = fun <- abstract_code!(bytecode),
           {name, arity} not in existing_functions,
           do: fun
 
-    {before_forms, after_forms} =
-      Enum.split_while(patch.forms, &(not match?({:function, _, _, _, _}, &1)))
-
+    {before_forms, after_forms} = Enum.split_while(forms, &(not match?(function(), &1)))
     forms = before_forms ++ new_forms ++ after_forms
-    %{patch | forms: forms}
+
+    bytecode = compile_forms!(forms, compile_opts)
+
+    %Patch{module: module, filename: filename, bytecode: bytecode}
+  rescue
+    e in BeamPatch.Error.t() -> reraise e, __STACKTRACE__
+    e -> reraise BeamPatch.InternalError, [raw: e], __STACKTRACE__
   end
 
-  defp compile_quoted(quoted, filename) do
-    {{:ok, [{_, bytecode}]}, _} =
+  defp expand_functions(ast) do
+    Macro.prewalk(ast, %{}, fn
+      {def_, _, [{name, _, ctx}, _body]} = fun, mappings
+      when def_ in [:def, :defp] and is_atom(name) and (is_atom(ctx) or is_list(ctx)) ->
+        arity = if is_atom(ctx), do: 0, else: length(ctx)
+        {new_fun, new_name} = expand_function(fun, arity)
+        new_mappings = Map.put(mappings, {name, arity}, new_name)
+        {new_fun, new_mappings}
+
+      node, mappings ->
+        {node, mappings}
+    end)
+  end
+
+  defp expand_function({def_, meta1, [{name, meta, ctx}, body]}, arity) do
+    {new_body, new_name} =
+      Macro.prewalk(body, nil, fn
+        {:super, meta, args}, _ ->
+          new_name = make_name(name)
+          {{new_name, meta, args}, new_name}
+
+        # &super/x
+        {:&, meta1, [{:/, meta2, [{:super, meta3, ctx}, ^arity]}]}, _ when is_atom(ctx) ->
+          new_name = make_name(name)
+          {{:&, meta1, [{:/, meta2, [{new_name, meta3, ctx}, arity]}]}, new_name}
+
+        other, acc ->
+          {other, acc}
+      end)
+
+    {{def_, meta1, [{name, meta, ctx}, new_body]}, new_name}
+  end
+
+  # credo:disable-for-next-line Credo.Check.Warning.UnsafeToAtom
+  defp make_name(name), do: :"#{name}_beam_patch_orig"
+
+  defp map_overriden_functions(forms, name_mappings) do
+    forms
+    |> Enum.filter(fn
+      function(name: name, arity: arity) -> Map.fetch(name_mappings, {name, arity}) != {:ok, nil}
+      _form -> true
+    end)
+    |> Enum.map(fn
+      function(name: name, arity: arity) = fun when is_map_key(name_mappings, {name, arity}) ->
+        function(fun, name: name_mappings[{name, arity}])
+
+      form ->
+        form
+    end)
+  end
+
+  defp compile_quoted!(quoted, filename) do
+    {result, diagnostics} =
       Code.with_diagnostics(fn ->
         old_compiler_options =
           Code.compiler_options(
@@ -94,23 +188,45 @@ defmodule BeamPatch do
         try do
           {:ok, Code.compile_quoted(quoted, filename)}
         rescue
-          err -> {:error, err}
+          err in CompileError -> {:error, err}
         after
           Code.compiler_options(old_compiler_options)
         end
       end)
 
-    bytecode
+    case result do
+      {:ok, [{_, bytecode}]} ->
+        bytecode
+
+      {:error, %CompileError{}} ->
+        errors = for %{severity: :error, message: message} <- diagnostics, do: message
+        raise BeamPatch.CompileError, stage: :quoted, errors: errors
+    end
   end
 
-  defp collect_functions(forms) do
-    for {:function, _, name, arity, _} <- forms,
-        into: MapSet.new(),
-        do: {name, arity}
+  defp compile_forms!(forms, compile_opts) do
+    compile_opts = [:return_errors, :return_warnings | compile_opts] -- @filter_out_compile_opts
+
+    case :compile.noenv_forms(forms, compile_opts) do
+      {:ok, _module, bytecode, _warnings} ->
+        bytecode
+
+      {:error, errors, _warnings} ->
+        errors =
+          for {_file, file_errors} <- errors,
+              {_line, _module, error} <- file_errors,
+              do: inspect(error)
+
+        raise BeamPatch.CompileError, stage: :forms, errors: errors
+    end
   end
 
-  defp rename_function({:function, meta, _name, arity, clauses}, new_name),
-    do: {:function, meta, new_name, arity, clauses}
+  defp get_object_code!(module) do
+    case :code.get_object_code(module) do
+      {^module, bytecode, _filename} -> bytecode
+      :error -> raise BeamPatch.AbstractCodeError, module: module, reason: :beam_file_missing
+    end
+  end
 
   defp file_attribute(forms) do
     Enum.find_value(forms, fn
@@ -119,14 +235,37 @@ defmodule BeamPatch do
     end)
   end
 
-  defp abstract_code(bytecode) do
-    {:ok, {_, abstract_code: abstract_code}} = :beam_lib.chunks(bytecode, [:abstract_code])
-    {:raw_abstract_v1, abstract} = abstract_code
-    abstract
+  defp abstract_code!(module \\ nil, bytecode) do
+    case :beam_lib.chunks(bytecode, [:abstract_code]) do
+      {:ok, {_, abstract_code: {:raw_abstract_v1, abstract}}} ->
+        abstract
+
+      {:ok, {_, abstract_code: {type, _abstract}}} ->
+        raise BeamPatch.AbstractCodeError,
+          module: module,
+          reason: {:unknown_abstract_code_type, type}
+
+      {:ok, {_, abstract_code: :no_abstract_code}} ->
+        raise BeamPatch.AbstractCodeError,
+          module: module,
+          reason: :abstract_code_chunk_missing
+
+      {:error, _, _} ->
+        raise BeamPatch.AbstractCodeError,
+          module: module,
+          reason: :abstract_code_chunk_missing
+    end
   end
 
-  defp compile_opts(bytecode) do
-    {:ok, {_, compile_info: info}} = :beam_lib.chunks(bytecode, [:compile_info])
-    Keyword.fetch!(info, :options)
+  defp compile_opts!(module, bytecode) do
+    case :beam_lib.chunks(bytecode, [:compile_info]) do
+      {:ok, {_, compile_info: info}} ->
+        Keyword.fetch!(info, :options)
+
+      {:error, _, _} ->
+        raise BeamPatch.AbstractCodeError,
+          module: module,
+          reason: :compile_info_chunk_missing
+    end
   end
 end

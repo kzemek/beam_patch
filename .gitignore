@@ -21,3 +21,6 @@ beam_patch-*.tar
 
 # Temporary files, for example, from tests.
 /tmp/
+
+# Elixir LS files
+/.elixir_ls/
