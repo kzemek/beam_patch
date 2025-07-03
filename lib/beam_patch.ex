@@ -90,7 +90,7 @@ defmodule BeamPatch do
               do: {name, [generated: true] ++ meta, ctx}
 
         quote do
-          def unquote(name)(unquote_splicing(args)), do: :ok
+          def unquote(name)(unquote_splicing(args)), do: :erlang.nif_error(:beam_patch_stub)
         end
       end
 
