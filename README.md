@@ -27,7 +27,7 @@ assert String.jaro_distance("same", "same") == 2.0
 ```elixir
 def deps do
   [
-    {:beam_patch, "~> 0.1.0"}
+    {:beam_patch, "~> 0.1.1"}
   ]
 end
 ```
