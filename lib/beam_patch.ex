@@ -15,6 +15,12 @@ defmodule BeamPatch do
 
   # These options don't work with our usage of `:compile.forms/2`
   @filter_out_compile_opts [:from_core, :no_core_prepare]
+  @compile_quoted_opts [
+    debug_info: true,
+    ignore_module_conflict: true,
+    no_warn_undefined: :all,
+    infer_signatures: false
+  ]
 
   Record.defrecordp(:function, [:ann, :name, :arity, :clauses])
 
@@ -97,7 +103,7 @@ defmodule BeamPatch do
     bytecode =
       compile_quoted!(
         quote do
-          defmodule Es6Maps.InjectedCode do
+          defmodule BeamPatch.InjectedCode do
             @moduledoc false
             @compile {:autoload, false}
             unquote(expanded_functions)
@@ -176,22 +182,16 @@ defmodule BeamPatch do
 
   defp compile_quoted!(quoted, filename) do
     {result, diagnostics} =
-      Code.with_diagnostics(fn ->
-        old_compiler_options =
-          Code.compiler_options(
-            debug_info: true,
-            ignore_module_conflict: true,
-            no_warn_undefined: :all,
-            infer_signatures: false
-          )
-
-        try do
-          {:ok, Code.compile_quoted(quoted, filename)}
-        rescue
-          err in CompileError -> {:error, err}
-        after
-          Code.compiler_options(old_compiler_options)
-        end
+      with_emulated_runtime_compilation(fn ->
+        with_compiler_options(@compile_quoted_opts, fn ->
+          Code.with_diagnostics(fn ->
+            try do
+              {:ok, Code.compile_quoted(quoted, filename)}
+            rescue
+              err in CompileError -> {:error, err}
+            end
+          end)
+        end)
       end)
 
     case result do
@@ -201,6 +201,29 @@ defmodule BeamPatch do
       {:error, %CompileError{}} ->
         errors = for %{severity: :error, message: message} <- diagnostics, do: message
         raise BeamPatch.CompileError, stage: :quoted, errors: errors
+    end
+  end
+
+  # Clean the dictionary so that the compiler doesn't see the compilation
+  # as "happening in compilation time", and doesn't generate a .beam file.
+  defp with_emulated_runtime_compilation(fun) do
+    process_dict = Process.get()
+    for {key, _} <- process_dict, do: Process.delete(key)
+
+    try do
+      fun.()
+    after
+      for {key, value} <- process_dict, do: Process.put(key, value)
+    end
+  end
+
+  defp with_compiler_options(opts, fun) do
+    old_compiler_options = Code.compiler_options(opts)
+
+    try do
+      fun.()
+    after
+      Code.compiler_options(old_compiler_options)
     end
   end
 

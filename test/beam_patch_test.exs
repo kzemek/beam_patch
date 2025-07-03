@@ -107,4 +107,14 @@ defmodule BeamPatchTest do
                    fn -> BeamPatch.patch_quoted!(NoDebugInfoModule, nil) end
     end
   end
+
+  describe "compilation-time patching" do
+    test "doesn't leave a .beam file" do
+      assert {:error, :nofile} = Code.ensure_loaded(BeamPatch.InjectedCode)
+    end
+
+    test "doesn't leave the module loaded" do
+      refute Code.loaded?(BeamPatch.InjectedCode)
+    end
+  end
 end
