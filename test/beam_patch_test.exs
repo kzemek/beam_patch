@@ -1,27 +1,31 @@
 defmodule BeamPatchTest do
   use ExUnit.Case, async: false
 
-  doctest BeamPatch
+  @compile {:no_warn_undefined, [String]}
 
   require BeamPatch
 
+  doctest BeamPatch
+
   @jaro_quoted (quote do
                   @modifier 2
-                  def jaro_distance(a, b), do: super(a, b) * @modifier
+
+                  @override original: [rename_to: :jaro_distance_orig]
+                  def jaro_distance(a, b), do: jaro_distance_orig(a, b) * @modifier
                 end)
 
-  describe "String.jaro_distance/2" do
-    setup do
-      on_exit(fn ->
-        :code.purge(String)
-        :code.load_file(String)
-      end)
+  setup do
+    on_exit(fn ->
+      :code.purge(String)
+      :code.load_file(String)
+    end)
 
-      assert String.jaro_distance("same", "same") == 1.0
+    assert String.jaro_distance("same", "same") == 1.0
 
-      :ok
-    end
+    :ok
+  end
 
+  describe "api" do
     test "patch!" do
       String
       |> BeamPatch.patch! do
@@ -67,6 +71,30 @@ defmodule BeamPatchTest do
     end
   end
 
+  describe "@override" do
+    test "replaces the function" do
+      BeamPatch.patch_and_load! String do
+        @override
+        def jaro_distance(a, b), do: helper()
+
+        defp helper, do: 123
+      end
+
+      assert String.jaro_distance("same", "same") == 123
+    end
+
+    test "renames the function" do
+      BeamPatch.patch_and_load! String do
+        @modifier 2
+
+        @override original: [rename_to: :jaro_distance_orig]
+        def jaro_distance(a, b), do: jaro_distance_orig(a, b) * @modifier
+      end
+
+      assert String.jaro_distance("same", "same") == 2.0
+    end
+  end
+
   describe "errors" do
     test "missing object code" do
       assert_raise BeamPatch.AbstractCodeError,
@@ -105,6 +133,45 @@ defmodule BeamPatchTest do
       assert_raise BeamPatch.AbstractCodeError,
                    "error loading abstract code for module NoDebugInfoModule: :abstract_code_chunk_missing",
                    fn -> BeamPatch.patch_quoted!(NoDebugInfoModule, nil) end
+    end
+
+    test "@override following an @override" do
+      assert {:error,
+              %BeamPatch.InvalidOverrideError{
+                message:
+                  "`@override rename_to: :jaro_distance_orig` found following an unresolved @override"
+              }} =
+               BeamPatch.patch_quoted(
+                 String,
+                 quote do
+                   @override
+
+                   @modifier :hi
+                   @override rename_to: :jaro_distance_orig
+                   def jaro_distance(a, b), do: jaro_distance_orig(a, b) * @modifier
+                 end
+               )
+    end
+
+    test "@override without a function" do
+      assert {:error,
+              %BeamPatch.InvalidOverrideError{
+                message: "@override found without a function"
+              }} =
+               BeamPatch.patch_quoted(
+                 String,
+                 quote do
+                   @override
+                 end
+               )
+    end
+
+    test "@override with an invalid syntax" do
+      assert {:error,
+              %BeamPatch.InvalidOverrideError{
+                message:
+                  "invalid @override options: unknown keys [:a] in [a: {:b, [], BeamPatchTest}], the allowed keys are: [:original]"
+              }} = BeamPatch.patch_quoted(String, quote(do: @override(a: b)))
     end
   end
 
