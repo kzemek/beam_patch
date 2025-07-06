@@ -69,6 +69,26 @@ defmodule BeamPatchTest do
 
       assert String.jaro_distance("same", "same") == 2.0
     end
+
+    test "patch_quoted_and_load with bytecode" do
+      %BeamPatch.Patch{bytecode: patched_bytecode} =
+        BeamPatch.patch_quoted!(String, nil, @jaro_quoted)
+
+      assert String.jaro_distance("same", "same") == 1.0
+
+      patch =
+        BeamPatch.patch! String, patched_bytecode do
+          @override original: [rename_to: :jaro_distance_orig2]
+          def jaro_distance(a, b), do: jaro_distance_orig2(a, b) * 2
+        end
+
+      assert String.jaro_distance("same", "same") == 1.0
+
+      BeamPatch.load!(patch)
+
+      # Double patched
+      assert String.jaro_distance("same", "same") == 4.0
+    end
   end
 
   describe "@override" do
@@ -160,11 +180,7 @@ defmodule BeamPatchTest do
     end
 
     test "@override following an @override" do
-      assert {:error,
-              %BeamPatch.InvalidOverrideError{
-                message:
-                  "`@override rename_to: :jaro_distance_orig` found following an unresolved @override"
-              }} =
+      assert {:error, %BeamPatch.InvalidOverrideError{reason: :unresolved_override}} =
                BeamPatch.patch_quoted(
                  String,
                  quote do
@@ -178,10 +194,7 @@ defmodule BeamPatchTest do
     end
 
     test "@override without a function" do
-      assert {:error,
-              %BeamPatch.InvalidOverrideError{
-                message: "@override found without a function"
-              }} =
+      assert {:error, %BeamPatch.InvalidOverrideError{reason: :unresolved_override}} =
                BeamPatch.patch_quoted(
                  String,
                  quote do
@@ -191,19 +204,13 @@ defmodule BeamPatchTest do
     end
 
     test "@override with an invalid syntax" do
-      assert {:error,
-              %BeamPatch.InvalidOverrideError{
-                message:
-                  "invalid @override options: unknown keys [:a] in [a: {:b, [], BeamPatchTest}], the allowed keys are: [:original]"
-              }} = BeamPatch.patch_quoted(String, quote(do: @override(a: b)))
+      assert {:error, %BeamPatch.InvalidOverrideError{reason: {:invalid_options, [:a]}}} =
+               BeamPatch.patch_quoted(String, quote(do: @override(a: b)))
     end
 
     test "no base implementation found for @override" do
       assert_raise BeamPatch.InvalidOverrideError,
-                   """
-                   no base implementation found for functions marked with @override:
-                   - jaro_distance_nope/2
-                   """,
+                   "invalid `@override`: {:no_base_implementation, [jaro_distance_nope: 2]}",
                    fn ->
                      BeamPatch.patch! String do
                        @override
