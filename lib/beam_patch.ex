@@ -23,6 +23,7 @@ defmodule BeamPatch do
   ]
 
   Record.defrecordp(:function, [:ann, :name, :arity, :clauses])
+  Record.defrecordp(:attribute, [:ann, :name, :value])
 
   defmacro patch!(module, do: body) do
     quote do
@@ -86,28 +87,26 @@ defmodule BeamPatch do
       end
 
     name_mappings = parse_override_mappings!(nodes)
-    parsed_nodes = parse_out_overrides(nodes)
+    parsed_nodes = filter_out_overrides(nodes)
     mapped_forms = map_overriden_functions(orig_forms, name_mappings)
-
-    existing_functions_set =
-      for function(name: name, arity: arity) <- mapped_forms,
-          into: MapSet.new(),
-          do: {name, arity}
+    function_visibility = parse_function_visibility(nodes)
 
     compiled_module_bytecode =
       parsed_nodes
-      |> prepare_injected_quote(existing_functions_set)
+      |> prepare_injected_quote(mapped_forms)
       |> compile_quoted!(filename)
 
     compiled_module_forms = abstract_code!(compiled_module_bytecode)
 
     injected_function_forms =
       for function(name: name, arity: arity) = fun <- compiled_module_forms,
-          {name, arity} not in existing_functions_set,
+          Map.has_key?(function_visibility, {name, arity}),
           do: fun
 
     {before_forms, after_forms} =
-      Enum.split_while(mapped_forms, &(not match?(function(), &1)))
+      mapped_forms
+      |> adjust_exports(function_visibility, name_mappings)
+      |> Enum.split_while(&(not match?(function(), &1)))
 
     new_forms = before_forms ++ injected_function_forms ++ after_forms
     new_bytecode = compile_forms!(new_forms, compile_opts)
@@ -118,9 +117,9 @@ defmodule BeamPatch do
     e -> reraise BeamPatch.InternalError, [raw: e], __STACKTRACE__
   end
 
-  defp prepare_injected_quote(nodes, existing_functions_set) do
+  defp prepare_injected_quote(nodes, forms) do
     existing_functions_quoted =
-      for {name, arity} <- existing_functions_set, name != :__info__ do
+      for function(name: name, arity: arity) <- forms, name != :__info__ do
         args =
           for {name, meta, ctx} <- Macro.generate_arguments(arity, nil),
               do: {name, [generated: true] ++ meta, ctx}
@@ -140,37 +139,69 @@ defmodule BeamPatch do
     end
   end
 
-  defp parse_out_overrides(nodes) do
+  defp adjust_exports(forms, function_visibility, name_mappings) do
+    Enum.map(forms, fn
+      attribute(name: :export, value: orig_exports) = attr ->
+        filtered_orig_exports =
+          for {name, arity} <- orig_exports,
+              not Map.has_key?(name_mappings, {name, arity}) and
+                not Map.has_key?(function_visibility, {name, arity}),
+              do: {name, arity}
+
+        new_function_exports = for {{name, arity}, true} <- function_visibility, do: {name, arity}
+
+        renamed_exports =
+          for {{_old_name, arity}, opts} <- name_mappings,
+              opts.rename_to != nil,
+              opts.export?,
+              do: {opts.rename_to, arity}
+
+        attribute(attr, value: filtered_orig_exports ++ new_function_exports ++ renamed_exports)
+
+      form ->
+        form
+    end)
+  end
+
+  defp filter_out_overrides(nodes) do
     Enum.reject(nodes, &match?({:@, _, [{:override, _, _}]}, &1))
   end
 
   defp parse_override_mappings!(nodes) do
-    {mappings, last_override} =
-      Enum.flat_map_reduce(nodes, nil, fn
-        {:@, _, [{:override, _, opts_or_ctx}]}, nil ->
-          {[], validate_override_opts!(opts_or_ctx)}
+    nodes
+    |> Enum.reduce(%{mappings: %{}, last_override_opts: nil}, fn
+      {:@, _, [{:override, _, opts_or_ctx}]}, %{last_override_opts: nil} = acc ->
+        %{acc | last_override_opts: validate_override_opts!(opts_or_ctx)}
 
-        {:@, _, [{:override, _, _}]} = node, _opts ->
-          raise BeamPatch.InvalidOverrideError,
-                "`#{Macro.to_string(node)}` found following an unresolved @override"
+      {:@, _, [{:override, _, _}]} = node, _opts ->
+        raise BeamPatch.InvalidOverrideError,
+              "`#{Macro.to_string(node)}` found following an unresolved @override"
 
-        _node, nil ->
-          {[], nil}
+      _node, %{last_override_opts: nil} = acc ->
+        acc
 
-        {def_, _, [{name, _, ctx}, _body]}, opts when def_ in [:def, :defp] ->
-          arity = if is_atom(ctx), do: 0, else: length(ctx)
-          {[{{name, arity}, opts}], nil}
+      {def_, _, _} = node, acc when def_ in [:def, :defp] ->
+        {name, arity} = ast_def_name_arity(node)
+        new_mappings = Map.put(acc.mappings, {name, arity}, acc.last_override_opts)
+        %{acc | mappings: new_mappings, last_override_opts: nil}
 
-        _node, opts ->
-          {[], opts}
-      end)
-
-    if last_override != nil do
-      raise BeamPatch.InvalidOverrideError, "@override found without a function"
+      _node, acc ->
+        acc
+    end)
+    |> case do
+      %{last_override_opts: nil} = acc -> acc.mappings
+      _ -> raise BeamPatch.InvalidOverrideError, "@override found without a function"
     end
-
-    Map.new(mappings)
   end
+
+  defp parse_function_visibility(nodes) do
+    for {def_, _, _} = node when def_ in [:def, :defp] <- nodes,
+        into: %{},
+        do: {ast_def_name_arity(node), def_ == :def}
+  end
+
+  defp ast_def_name_arity({def_, _, [{name, _, ctx}, _body]}) when def_ in [:def, :defp],
+    do: {name, if(is_atom(ctx), do: 0, else: length(ctx))}
 
   defp validate_override_opts!(opts_or_ctx) do
     case opts_or_ctx do
@@ -179,7 +210,7 @@ defmodule BeamPatch do
     end
     |> Keyword.validate!(original: [])
     |> Keyword.fetch!(:original)
-    |> Keyword.validate!(rename_to: nil)
+    |> Keyword.validate!(rename_to: nil, export?: false)
     |> Map.new()
   rescue
     e in ArgumentError ->
@@ -190,11 +221,9 @@ defmodule BeamPatch do
 
   defp map_overriden_functions(forms, name_mappings) do
     Enum.flat_map(forms, fn
-      function(name: name, arity: arity) = form ->
-        case name_mappings[{name, arity}] do
-          nil -> [form]
-          opts -> if opts[:rename_to], do: [function(form, name: opts[:rename_to])], else: []
-        end
+      function(name: name, arity: arity) = form when is_map_key(name_mappings, {name, arity}) ->
+        new_name = name_mappings[{name, arity}].rename_to
+        if new_name, do: [function(form, name: new_name)], else: []
 
       form ->
         [form]
@@ -275,7 +304,7 @@ defmodule BeamPatch do
 
   defp file_attribute(forms) do
     Enum.find_value(forms, "", fn
-      {:attribute, _, :file, {filename, _}} -> filename
+      attribute(name: :file, value: {filename, _}) -> filename
       _ -> nil
     end)
   end

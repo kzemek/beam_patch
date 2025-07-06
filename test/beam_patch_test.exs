@@ -93,6 +93,30 @@ defmodule BeamPatchTest do
 
       assert String.jaro_distance("same", "same") == 2.0
     end
+
+    test "renames and exports the function" do
+      BeamPatch.patch_and_load! String do
+        @override original: [rename_to: :jaro_distance_orig, export?: true]
+        def jaro_distance(a, b), do: jaro_distance_orig(a, b) * 2
+      end
+
+      assert String.jaro_distance("same", "same") == 2.0
+      assert String.jaro_distance_orig("same", "same") == 1.0
+    end
+
+    test "honors visibility of injected functions" do
+      BeamPatch.patch_and_load! String do
+        @override original: [rename_to: :jaro_distance_orig]
+        defp jaro_distance(a, b), do: jaro_distance_orig(a, b) * 2
+
+        def jaro_distance_wrapper(a, b), do: jaro_distance(a, b)
+      end
+
+      refute function_exported?(String, :jaro_distance, 2)
+      refute function_exported?(String, :jaro_distance_orig, 2)
+      assert function_exported?(String, :jaro_distance_wrapper, 2)
+      assert String.jaro_distance_wrapper("same", "same") == 2.0
+    end
   end
 
   describe "errors" do
