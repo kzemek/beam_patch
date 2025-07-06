@@ -74,23 +74,53 @@ defmodule BeamPatch do
 
   @spec patch_quoted!(module(), body :: Macro.t()) :: Patch.t()
   def patch_quoted!(module, body) do
-    bytecode = get_object_code!(module)
+    orig_bytecode = get_object_code!(module)
+    orig_forms = abstract_code!(module, orig_bytecode)
+    filename = file_attribute(orig_forms)
+    compile_opts = compile_opts!(module, orig_bytecode)
 
-    forms = abstract_code!(module, bytecode)
-    filename = file_attribute(forms) || ~c""
-    compile_opts = compile_opts!(module, bytecode)
+    nodes =
+      case body do
+        {:__block__, _, nodes} -> nodes
+        _ -> List.wrap(body)
+      end
 
-    {expanded_functions, name_mappings} = expand_functions(body)
-    forms = map_overriden_functions(forms, name_mappings)
+    name_mappings = parse_override_mappings!(nodes)
+    parsed_nodes = parse_out_overrides(nodes)
+    mapped_forms = map_overriden_functions(orig_forms, name_mappings)
 
-    existing_functions =
-      for function(name: name, arity: arity) <- forms,
+    existing_functions_set =
+      for function(name: name, arity: arity) <- mapped_forms,
           into: MapSet.new(),
           do: {name, arity}
 
+    compiled_module_bytecode =
+      parsed_nodes
+      |> prepare_injected_quote(existing_functions_set)
+      |> compile_quoted!(filename)
+
+    compiled_module_forms = abstract_code!(compiled_module_bytecode)
+
+    injected_function_forms =
+      for function(name: name, arity: arity) = fun <- compiled_module_forms,
+          {name, arity} not in existing_functions_set,
+          do: fun
+
+    {before_forms, after_forms} =
+      Enum.split_while(mapped_forms, &(not match?(function(), &1)))
+
+    new_forms = before_forms ++ injected_function_forms ++ after_forms
+    new_bytecode = compile_forms!(new_forms, compile_opts)
+
+    %Patch{module: module, filename: filename, bytecode: new_bytecode}
+  rescue
+    e in BeamPatch.Error.t() -> reraise e, __STACKTRACE__
+    e -> reraise BeamPatch.InternalError, [raw: e], __STACKTRACE__
+  end
+
+  defp prepare_injected_quote(nodes, existing_functions_set) do
     existing_functions_quoted =
-      for {name, arity} <- existing_functions,
-          name != :__info__ do
+      for {name, arity} <- existing_functions_set, name != :__info__ do
         args =
           for {name, meta, ctx} <- Macro.generate_arguments(arity, nil),
               do: {name, [generated: true] ++ meta, ctx}
@@ -100,83 +130,74 @@ defmodule BeamPatch do
         end
       end
 
-    bytecode =
-      compile_quoted!(
-        quote do
-          defmodule BeamPatch.InjectedCode do
-            @moduledoc false
-            @compile {:autoload, false}
-            unquote(expanded_functions)
-            unquote_splicing(existing_functions_quoted)
-          end
-        end,
-        to_string(filename)
-      )
-
-    new_forms =
-      for function(name: name, arity: arity) = fun <- abstract_code!(bytecode),
-          {name, arity} not in existing_functions,
-          do: fun
-
-    {before_forms, after_forms} = Enum.split_while(forms, &(not match?(function(), &1)))
-    forms = before_forms ++ new_forms ++ after_forms
-
-    bytecode = compile_forms!(forms, compile_opts)
-
-    %Patch{module: module, filename: filename, bytecode: bytecode}
-  rescue
-    e in BeamPatch.Error.t() -> reraise e, __STACKTRACE__
-    e -> reraise BeamPatch.InternalError, [raw: e], __STACKTRACE__
+    quote do
+      defmodule BeamPatch.InjectedCode do
+        @moduledoc false
+        @compile {:autoload, false}
+        unquote_splicing(nodes)
+        unquote_splicing(existing_functions_quoted)
+      end
+    end
   end
 
-  defp expand_functions(ast) do
-    Macro.prewalk(ast, %{}, fn
-      {def_, _, [{name, _, ctx}, _body]} = fun, mappings
-      when def_ in [:def, :defp] and is_atom(name) and (is_atom(ctx) or is_list(ctx)) ->
-        arity = if is_atom(ctx), do: 0, else: length(ctx)
-        {new_fun, new_name} = expand_function(fun, arity)
-        new_mappings = Map.put(mappings, {name, arity}, new_name)
-        {new_fun, new_mappings}
-
-      node, mappings ->
-        {node, mappings}
-    end)
+  defp parse_out_overrides(nodes) do
+    Enum.reject(nodes, &match?({:@, _, [{:override, _, _}]}, &1))
   end
 
-  defp expand_function({def_, meta1, [{name, meta, ctx}, body]}, arity) do
-    {new_body, new_name} =
-      Macro.prewalk(body, nil, fn
-        {:super, meta, args}, _ ->
-          new_name = make_name(name)
-          {{new_name, meta, args}, new_name}
+  defp parse_override_mappings!(nodes) do
+    {mappings, last_override} =
+      Enum.flat_map_reduce(nodes, nil, fn
+        {:@, _, [{:override, _, opts_or_ctx}]}, nil ->
+          {[], validate_override_opts!(opts_or_ctx)}
 
-        # &super/x
-        {:&, meta1, [{:/, meta2, [{:super, meta3, ctx}, ^arity]}]}, _ when is_atom(ctx) ->
-          new_name = make_name(name)
-          {{:&, meta1, [{:/, meta2, [{new_name, meta3, ctx}, arity]}]}, new_name}
+        {:@, _, [{:override, _, _}]} = node, _opts ->
+          raise BeamPatch.InvalidOverrideError,
+                "`#{Macro.to_string(node)}` found following an unresolved @override"
 
-        other, acc ->
-          {other, acc}
+        _node, nil ->
+          {[], nil}
+
+        {def_, _, [{name, _, ctx}, _body]}, opts when def_ in [:def, :defp] ->
+          arity = if is_atom(ctx), do: 0, else: length(ctx)
+          {[{{name, arity}, opts}], nil}
+
+        _node, opts ->
+          {[], opts}
       end)
 
-    {{def_, meta1, [{name, meta, ctx}, new_body]}, new_name}
+    if last_override != nil do
+      raise BeamPatch.InvalidOverrideError, "@override found without a function"
+    end
+
+    Map.new(mappings)
   end
 
-  # credo:disable-for-next-line Credo.Check.Warning.UnsafeToAtom
-  defp make_name(name), do: :"#{name}_beam_patch_orig"
+  defp validate_override_opts!(opts_or_ctx) do
+    case opts_or_ctx do
+      [opts] when is_list(opts) -> opts
+      ctx when is_atom(ctx) -> []
+    end
+    |> Keyword.validate!(original: [])
+    |> Keyword.fetch!(:original)
+    |> Keyword.validate!(rename_to: nil)
+    |> Map.new()
+  rescue
+    e in ArgumentError ->
+      reraise BeamPatch.InvalidOverrideError,
+              "invalid @override options: #{Exception.message(e)}",
+              __STACKTRACE__
+  end
 
   defp map_overriden_functions(forms, name_mappings) do
-    forms
-    |> Enum.filter(fn
-      function(name: name, arity: arity) -> Map.fetch(name_mappings, {name, arity}) != {:ok, nil}
-      _form -> true
-    end)
-    |> Enum.map(fn
-      function(name: name, arity: arity) = fun when is_map_key(name_mappings, {name, arity}) ->
-        function(fun, name: name_mappings[{name, arity}])
+    Enum.flat_map(forms, fn
+      function(name: name, arity: arity) = form ->
+        case name_mappings[{name, arity}] do
+          nil -> [form]
+          opts -> if opts[:rename_to], do: [function(form, name: opts[:rename_to])], else: []
+        end
 
       form ->
-        form
+        [form]
     end)
   end
 
@@ -186,7 +207,7 @@ defmodule BeamPatch do
         with_compiler_options(@compile_quoted_opts, fn ->
           Code.with_diagnostics(fn ->
             try do
-              {:ok, Code.compile_quoted(quoted, filename)}
+              {:ok, Code.compile_quoted(quoted, to_string(filename))}
             rescue
               err in CompileError -> {:error, err}
             end
@@ -204,6 +225,7 @@ defmodule BeamPatch do
     end
   end
 
+  # TODO: this can be done by running in a task instead
   # Clean the dictionary so that the compiler doesn't see the compilation
   # as "happening in compilation time", and doesn't generate a .beam file.
   defp with_emulated_runtime_compilation(fun) do
@@ -252,7 +274,7 @@ defmodule BeamPatch do
   end
 
   defp file_attribute(forms) do
-    Enum.find_value(forms, fn
+    Enum.find_value(forms, "", fn
       {:attribute, _, :file, {filename, _}} -> filename
       _ -> nil
     end)

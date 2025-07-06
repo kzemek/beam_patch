@@ -1,6 +1,7 @@
 defmodule BeamPatch.Error do
   @type t ::
           BeamPatch.InternalError.t()
+          | BeamPatch.InvalidOverrideError.t()
           | BeamPatch.AbstractCodeError.t()
           | BeamPatch.CompileError.t()
           | BeamPatch.ModuleLoadError.t()
@@ -8,6 +9,7 @@ defmodule BeamPatch.Error do
   defmacro t do
     Macro.escape([
       BeamPatch.InternalError,
+      BeamPatch.InvalidOverrideError,
       BeamPatch.AbstractCodeError,
       BeamPatch.CompileError,
       BeamPatch.ModuleLoadError
@@ -24,6 +26,11 @@ defmodule BeamPatch.InternalError do
   def message(%__MODULE__{} = e) do
     "internal error: (#{inspect(e.raw.__struct__)}) #{Exception.message(e.raw)}"
   end
+end
+
+defmodule BeamPatch.InvalidOverrideError do
+  defexception [:message]
+  @type t :: %__MODULE__{message: String.t()}
 end
 
 defmodule BeamPatch.AbstractCodeError do
