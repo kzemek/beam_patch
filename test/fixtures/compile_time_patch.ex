@@ -1,8 +1,13 @@
 defmodule CompileTimePatch do
   @moduledoc false
-  require BeamPatch
 
-  @patch BeamPatch.patch_quoted!(String, do: nil)
+  @patch BeamPatch.patch_quoted!(
+           String,
+           quote do
+             def hello, do: :world
+           end
+         )
 
-  def patch, do: @patch
+  @spec load :: :ok
+  def load, do: BeamPatch.load!(@patch)
 end
