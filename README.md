@@ -73,7 +73,7 @@ iex> String.hello()
 ```elixir
 def deps do
   [
-    {:beam_patch, "~> 0.1.1"}
+    {:beam_patch, "~> 0.2.0"}
   ]
 end
 ```
