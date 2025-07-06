@@ -125,7 +125,8 @@ defmodule BeamPatch do
               do: {name, [generated: true] ++ meta, ctx}
 
         quote do
-          def unquote(name)(unquote_splicing(args)), do: :erlang.nif_error(:beam_patch_stub)
+          def unquote(name)(unquote_splicing(args)),
+            do: :erlang.nif_error(:beam_patch_stub)
         end
       end
 
@@ -148,7 +149,9 @@ defmodule BeamPatch do
                 not Map.has_key?(function_visibility, {name, arity}),
               do: {name, arity}
 
-        new_function_exports = for {{name, arity}, true} <- function_visibility, do: {name, arity}
+        new_function_exports =
+          for {{name, arity}, true} <- function_visibility,
+              do: {name, arity}
 
         renamed_exports =
           for {{_old_name, arity}, opts} <- name_mappings,
@@ -254,19 +257,10 @@ defmodule BeamPatch do
     end
   end
 
-  # TODO: this can be done by running in a task instead
-  # Clean the dictionary so that the compiler doesn't see the compilation
+  # Compile out-of-process so that the compiler doesn't see the compilation
   # as "happening in compilation time", and doesn't generate a .beam file.
-  defp with_emulated_runtime_compilation(fun) do
-    process_dict = Process.get()
-    for {key, _} <- process_dict, do: Process.delete(key)
-
-    try do
-      fun.()
-    after
-      for {key, value} <- process_dict, do: Process.put(key, value)
-    end
-  end
+  defp with_emulated_runtime_compilation(fun),
+    do: fun |> Task.async() |> Task.await(:infinity)
 
   defp with_compiler_options(opts, fun) do
     old_compiler_options = Code.compiler_options(opts)
