@@ -88,7 +88,7 @@ defmodule BeamPatch do
 
     name_mappings = parse_override_mappings!(nodes)
     parsed_nodes = filter_out_overrides(nodes)
-    mapped_forms = map_overriden_functions(orig_forms, name_mappings)
+    mapped_forms = map_overriden_functions!(orig_forms, name_mappings)
     function_visibility = parse_function_visibility(nodes)
 
     compiled_module_bytecode =
@@ -222,15 +222,28 @@ defmodule BeamPatch do
               __STACKTRACE__
   end
 
-  defp map_overriden_functions(forms, name_mappings) do
-    Enum.flat_map(forms, fn
-      function(name: name, arity: arity) = form when is_map_key(name_mappings, {name, arity}) ->
-        new_name = name_mappings[{name, arity}].rename_to
-        if new_name, do: [function(form, name: new_name)], else: []
+  defp map_overriden_functions!(forms, name_mappings) do
+    {new_forms, unconsumed_name_mappings} =
+      Enum.flat_map_reduce(forms, name_mappings, fn
+        function(name: name, arity: arity) = form, name_mappings
+        when is_map_key(name_mappings, {name, arity}) ->
+          {opts, new_name_mappings} = Map.pop!(name_mappings, {name, arity})
+          new_form = if opts.rename_to, do: [function(form, name: opts.rename_to)], else: []
+          {new_form, new_name_mappings}
 
-      form ->
-        [form]
-    end)
+        form, name_mappings ->
+          {[form], name_mappings}
+      end)
+
+    if unconsumed_name_mappings != %{} do
+      raise BeamPatch.InvalidOverrideError,
+            """
+            no base implementation found for functions marked with @override:
+            #{for {{name, arity}, _opts} <- unconsumed_name_mappings, do: "- #{name}/#{arity}"}
+            """
+    end
+
+    new_forms
   end
 
   defp compile_quoted!(quoted, filename) do

@@ -197,6 +197,20 @@ defmodule BeamPatchTest do
                   "invalid @override options: unknown keys [:a] in [a: {:b, [], BeamPatchTest}], the allowed keys are: [:original]"
               }} = BeamPatch.patch_quoted(String, quote(do: @override(a: b)))
     end
+
+    test "no base implementation found for @override" do
+      assert_raise BeamPatch.InvalidOverrideError,
+                   """
+                   no base implementation found for functions marked with @override:
+                   - jaro_distance_nope/2
+                   """,
+                   fn ->
+                     BeamPatch.patch! String do
+                       @override
+                       def jaro_distance_nope(a, b), do: 123
+                     end
+                   end
+    end
   end
 
   describe "compilation-time patching" do
