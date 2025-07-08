@@ -7,6 +7,8 @@ defmodule BeamPatchTest do
 
   doctest BeamPatch
 
+  use MarkdownDoctest, file: "README.md", except: &(&1 =~ "def deps")
+
   @jaro_quoted (quote do
                   @modifier 2
 
