@@ -1,5 +1,6 @@
 defmodule BeamPatchTest do
   use ExUnit.Case, async: false
+  use MarkdownDoctest
 
   @compile {:no_warn_undefined, [String]}
 
@@ -7,7 +8,7 @@ defmodule BeamPatchTest do
 
   doctest BeamPatch
 
-  use MarkdownDoctest, file: "README.md", except: &(&1 =~ "def deps")
+  markdown_doctest "README.md", except: &(&1 =~ "def deps")
 
   @jaro_quoted (quote do
                   @modifier 2
