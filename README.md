@@ -68,7 +68,7 @@ assert String.hello() == :world
 ```elixir
 def deps do
   [
-    {:beam_patch, "~> 0.2.0"}
+    {:beam_patch, "~> 0.2.1"}
   ]
 end
 ```
