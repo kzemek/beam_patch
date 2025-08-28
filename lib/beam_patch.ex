@@ -199,7 +199,6 @@ defmodule BeamPatch do
     quote do
       defmodule BeamPatch.InjectedCode do
         @moduledoc false
-        @compile {:autoload, false}
         unquote_splicing(nodes)
         unquote_splicing(existing_functions_quoted)
       end
@@ -310,13 +309,19 @@ defmodule BeamPatch do
   end
 
   defp compile_quoted!(quoted, filename) do
-    fn -> Code.compile_quoted(quoted, to_string(filename)) end
-    |> with_compiler_options(@compile_quoted_opts)
-    |> with_compiler_error_rescue()
-    |> with_compiler_diagnostics()
-    |> with_emulated_runtime_compilation()
-    |> apply([])
-    |> case do
+    compile_fun =
+      fn ->
+        bytecode = Code.compile_quoted(quoted, to_string(filename))
+        :code.delete(BeamPatch.InjectedCode)
+        :code.purge(BeamPatch.InjectedCode)
+        bytecode
+      end
+      |> with_compiler_options(@compile_quoted_opts)
+      |> with_compiler_error_rescue()
+      |> with_compiler_diagnostics()
+      |> with_emulated_runtime_compilation()
+
+    case compile_fun.() do
       {{:ok, [{_, bytecode}]}, _} ->
         bytecode
 
