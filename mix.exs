@@ -4,7 +4,7 @@ defmodule BeamPatch.MixProject do
   def project do
     [
       app: :beam_patch,
-      version: "0.2.1",
+      version: "0.2.2",
       description: "Patch Elixir & Erlang modules at runtime",
       package: package(),
       source_url: "https://github.com/kzemek/beam_patch",
