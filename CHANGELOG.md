@@ -1,3 +1,7 @@
+# 0.2.2 (Unreleased)
+
+* Accept missing compilation options in `:compile_info` BEAM chunk
+
 # 0.2.1
 
 * Elixir 1.19 compatibility - manually unload the temporary `BeamPatch.InjectedCode` module

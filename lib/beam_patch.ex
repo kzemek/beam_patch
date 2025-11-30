@@ -418,7 +418,7 @@ defmodule BeamPatch do
   defp compile_opts!(module, bytecode) do
     case :beam_lib.chunks(bytecode, [:compile_info]) do
       {:ok, {_, compile_info: info}} ->
-        Keyword.fetch!(info, :options)
+        Keyword.get(info, :options, [])
 
       {:error, _, _} ->
         raise BeamPatch.AbstractCodeError,
