@@ -25,7 +25,7 @@ defmodule BeamPatch.MixProject do
 
   defp deps do
     [
-      {:ex_doc, "~> 0.38.1", only: :dev, runtime: false},
+      {:ex_doc, "~> 0.39.3", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: :dev, runtime: false},
       {:dialyxir, "~> 1.4", only: :dev, runtime: false},
       {:markdown_doctest, "~> 0.2.0", only: :test, runtime: false}
