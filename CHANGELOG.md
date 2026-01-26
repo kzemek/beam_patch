@@ -1,3 +1,7 @@
+# 0.2.3 (Unreleased)
+
+* Ensure `defp` overrides aren't optimized out
+
 # 0.2.2
 
 * Accept missing compilation options in `:compile_info` BEAM chunk

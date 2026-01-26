@@ -159,7 +159,7 @@ defmodule BeamPatch do
 
     compiled_module_bytecode =
       parsed_nodes
-      |> prepare_injected_quote(mapped_forms)
+      |> prepare_injected_quote(mapped_forms, Map.keys(name_mappings))
       |> compile_quoted!(filename)
 
     compiled_module_forms = abstract_code!(compiled_module_bytecode)
@@ -183,7 +183,18 @@ defmodule BeamPatch do
     e -> reraise BeamPatch.InternalError, [raw: e], __STACKTRACE__
   end
 
-  defp prepare_injected_quote(nodes, forms) do
+  defp prepare_injected_quote(nodes, forms, override_funs) do
+    call_to_overrides =
+      for {name, arity} <- override_funs do
+        args = for _ <- 1..arity, do: quote(do: :erlang.nif_error(:beam_patch_stub))
+        quote(do: unquote(name)(unquote_splicing(args)))
+      end
+
+    fake_public_function =
+      quote do
+        def fake_public_function, do: unquote(call_to_overrides)
+      end
+
     existing_functions_quoted =
       for function(name: name, arity: arity) <- forms, name != :__info__ do
         args =
@@ -199,6 +210,7 @@ defmodule BeamPatch do
     quote do
       defmodule BeamPatch.InjectedCode do
         @moduledoc false
+        unquote(fake_public_function)
         unquote_splicing(nodes)
         unquote_splicing(existing_functions_quoted)
       end
