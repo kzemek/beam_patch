@@ -159,8 +159,8 @@ defmodule BeamPatch do
 
     compiled_module_bytecode =
       parsed_nodes
-      |> prepare_injected_quote(mapped_forms, Map.keys(name_mappings))
-      |> compile_quoted!(filename)
+      |> prepare_injected_quote(module, mapped_forms, Map.keys(name_mappings))
+      |> compile_quoted!(module, filename)
 
     compiled_module_forms = abstract_code!(compiled_module_bytecode)
 
@@ -183,7 +183,7 @@ defmodule BeamPatch do
     e -> reraise BeamPatch.InternalError, [raw: e], __STACKTRACE__
   end
 
-  defp prepare_injected_quote(nodes, forms, override_funs) do
+  defp prepare_injected_quote(nodes, module, forms, override_funs) do
     call_to_overrides =
       for {name, arity} <- override_funs do
         args = for _ <- 1..arity, do: quote(do: :erlang.nif_error(:beam_patch_stub))
@@ -208,7 +208,7 @@ defmodule BeamPatch do
       end
 
     quote do
-      defmodule BeamPatch.InjectedCode do
+      defmodule unquote(Module.concat([BeamPatch.InjectedCode, module])) do
         @moduledoc false
         unquote(fake_public_function)
         unquote_splicing(nodes)
@@ -320,12 +320,13 @@ defmodule BeamPatch do
     new_forms
   end
 
-  defp compile_quoted!(quoted, filename) do
+  defp compile_quoted!(quoted, module, filename) do
     compile_fun =
       fn ->
         bytecode = Code.compile_quoted(quoted, to_string(filename))
-        :code.delete(BeamPatch.InjectedCode)
-        :code.purge(BeamPatch.InjectedCode)
+        injected_module = Module.concat([BeamPatch.InjectedCode, module])
+        :code.delete(injected_module)
+        :code.purge(injected_module)
         bytecode
       end
       |> with_compiler_options(@compile_quoted_opts)

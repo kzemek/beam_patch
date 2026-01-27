@@ -225,11 +225,11 @@ defmodule BeamPatchTest do
 
   describe "compilation-time patching" do
     test "doesn't leave a .beam file" do
-      assert {:error, :nofile} = Code.ensure_loaded(BeamPatch.InjectedCode)
+      assert {:error, :nofile} = Code.ensure_loaded(BeamPatch.InjectedCode.String)
     end
 
     test "doesn't leave the module loaded" do
-      refute Code.loaded?(BeamPatch.InjectedCode)
+      refute Code.loaded?(BeamPatch.InjectedCode.String)
     end
   end
 end
