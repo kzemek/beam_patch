@@ -160,7 +160,7 @@ defmodule BeamPatch do
     compiled_module_bytecode =
       parsed_nodes
       |> prepare_injected_quote(module, mapped_forms, Map.keys(name_mappings))
-      |> compile_quoted!(module, filename)
+      |> compile_quoted!(filename)
 
     compiled_module_forms = abstract_code!(compiled_module_bytecode)
 
@@ -320,11 +320,10 @@ defmodule BeamPatch do
     new_forms
   end
 
-  defp compile_quoted!(quoted, module, filename) do
+  defp compile_quoted!({:defmodule, _, [injected_module, _]} = quoted, filename) do
     compile_fun =
       fn ->
         bytecode = Code.compile_quoted(quoted, to_string(filename))
-        injected_module = Module.concat([BeamPatch.InjectedCode, module])
         :code.delete(injected_module)
         :code.purge(injected_module)
         bytecode
