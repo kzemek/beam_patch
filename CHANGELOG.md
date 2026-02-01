@@ -1,4 +1,4 @@
-# 0.2.3 (Unreleased)
+# 0.2.3
 
 * Ensure `defp` overrides aren't optimized out
 
