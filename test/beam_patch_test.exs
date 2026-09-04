@@ -140,6 +140,20 @@ defmodule BeamPatchTest do
       assert function_exported?(String, :jaro_distance_wrapper, 2)
       assert String.jaro_distance_wrapper("same", "same") == 2.0
     end
+
+    test "works with zero-arity functions" do
+      on_exit(fn ->
+        :code.purge(System)
+        :code.load_file(System)
+      end)
+
+      BeamPatch.patch_and_load! System do
+        @override original: [rename_to: :system_build_info_orig]
+        def build_info, do: Map.put(system_build_info_orig(), :version, "dummy")
+      end
+
+      assert %{version: "dummy"} = System.build_info()
+    end
   end
 
   describe "errors" do

@@ -1,9 +1,13 @@
+# 0.2.4
+
+* Fix overriding zero-arity functions
+
 # 0.2.3
 
 * Ensure `defp` overrides aren't optimized out
 
 * Ensure unique names for InjectedCode modules to allow concurrent compilation
-  
+
   Fixes Elixir compiler errors `BeamPatch.InjectedCode is already being compiled`.
 
 # 0.2.2

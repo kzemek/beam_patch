@@ -186,7 +186,7 @@ defmodule BeamPatch do
   defp prepare_injected_quote(nodes, module, forms, override_funs) do
     call_to_overrides =
       for {name, arity} <- override_funs do
-        args = for _ <- 1..arity, do: quote(do: :erlang.nif_error(:beam_patch_stub))
+        args = for _ <- 1..arity//1, do: quote(do: :erlang.nif_error(:beam_patch_stub))
         quote(do: unquote(name)(unquote_splicing(args)))
       end
 
